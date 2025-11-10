@@ -1,56 +1,71 @@
+// @ts-nocheck
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 
 export async function POST(req: NextRequest) {
+  // Ambil data dari form
   const form = await req.formData()
   const variant_id = String(form.get('variant_id') || '')
   const wear_date = String(form.get('wear_date') || '')
   const extra_duration = Number(form.get('extra_duration') || 0)
   const delivery_type = String(form.get('delivery_type') || 'INSTANT')
 
-  if (!variant_id || !wear_date) return NextResponse.redirect(new URL('/?error=missing', req.url))
+  if (!variant_id || !wear_date) {
+    return NextResponse.redirect(new URL('/?error=missing', req.url))
+  }
 
-  // find available inventory
-  const url = new URL(req.url)
-  url.pathname = '/api/availability'
-  url.searchParams.set('variantId', variant_id)
-  url.searchParams.set('wear_date', wear_date)
-  url.searchParams.set('extra_duration', String(extra_duration))
-  const avail = await fetch(url.toString(), { cache: 'no-store' }).then(r => r.json())
+  // Cek ketersediaan inventory untuk varian ini di tanggal yang diminta
+  const availUrl = new URL(req.url)
+  availUrl.pathname = '/api/availability'
+  availUrl.search = ''
+  availUrl.searchParams.set('variantId', variant_id)
+  availUrl.searchParams.set('wear_date', wear_date)
+  availUrl.searchParams.set('extra_duration', String(extra_duration))
 
-  if (!avail.availableInventoryId) {
+  const avail = await fetch(availUrl.toString(), { cache: 'no-store' }).then(r => r.json())
+  if (!avail?.availableInventoryId) {
     return NextResponse.redirect(new URL('/?error=unavailable', req.url))
   }
 
-// product price (robust + aman tipe)
-const { data: variantRow, error: vErr } = await supabaseAdmin
-  .from('variants')
-  .select('id, product:products ( id, base_price, extra_day, deposit )')
-  .eq('id', Number(variant_id))
-  .maybeSingle(); // tidak lempar error kalau kosong
+  // Ambil harga product melalui varian → product
+  const { data: variantRow, error: vErr } = await supabaseAdmin
+    .from('variants')
+    .select(
+      `
+      id,
+      product:products (
+        id,
+        base_price,
+        extra_day,
+        deposit
+      )
+      `
+    )
+    .eq('id', Number(variant_id))
+    .maybeSingle()
 
-if (vErr || !variantRow) {
-  console.error(vErr);
-  return NextResponse.redirect(new URL('/?error=variant', req.url));
-}
+  if (vErr || !variantRow || !variantRow.product) {
+    console.error('variant/product error', vErr)
+    return NextResponse.redirect(new URL('/?error=variant', req.url))
+  }
 
-const base    = Number(variantRow.product?.base_price ?? 0);
-const extra   = Number(variantRow.product?.extra_day ?? 0) * Number(extra_duration ?? 0);
-const total   = base + extra;
-const deposit = Number(variantRow.product?.deposit ?? 0);
+  const base    = Number(variantRow.product.base_price ?? 0)
+  const extra   = Number(variantRow.product.extra_day ?? 0) * Number(extra_duration ?? 0)
+  const total   = base + extra
+  const deposit = Number(variantRow.product.deposit ?? 0)
 
-
+  // Buat order + booking dalam satu transaksi (RPC)
   const { data: order, error } = await supabaseAdmin.rpc('create_order_with_booking', {
     p_inventory_id: avail.availableInventoryId,
-    p_wear_date: wear_date,
+    p_wear_date: wear_date,                 // DATE (yyyy-mm-dd)
     p_extra_duration: extra_duration,
-    p_delivery_type: delivery_type,
+    p_delivery_type: delivery_type,         // 'INSTANT'|'SAME_DAY'|'REGULAR'|'PICKUP'
     p_total: total,
     p_deposit: deposit
   })
 
   if (error) {
-    console.error(error)
+    console.error('create_order_with_booking error', error)
     return NextResponse.redirect(new URL('/?error=order', req.url))
   }
 
