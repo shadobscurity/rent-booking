@@ -22,16 +22,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.redirect(new URL('/?error=unavailable', req.url))
   }
 
-  // product price
-  const { data: variantRow } = await supabaseAdmin
-    .from('variants')
-    .select('id, product:products ( id, base_price, extra_day, deposit )')
-    .eq('id', variant_id).single()
+// product price (robust + aman tipe)
+const { data: variantRow, error: vErr } = await supabaseAdmin
+  .from('variants')
+  .select('id, product:products ( id, base_price, extra_day, deposit )')
+  .eq('id', Number(variant_id))
+  .maybeSingle(); // tidak lempar error kalau kosong
 
-  const base = variantRow?.product?.base_price ?? 0
-  const extra = (variantRow?.product?.extra_day ?? 0) * extra_duration
-  const total = base + extra
-  const deposit = variantRow?.product?.deposit ?? 0
+if (vErr || !variantRow) {
+  console.error(vErr);
+  return NextResponse.redirect(new URL('/?error=variant', req.url));
+}
+
+const base    = Number(variantRow.product?.base_price ?? 0);
+const extra   = Number(variantRow.product?.extra_day ?? 0) * Number(extra_duration ?? 0);
+const total   = base + extra;
+const deposit = Number(variantRow.product?.deposit ?? 0);
+
 
   const { data: order, error } = await supabaseAdmin.rpc('create_order_with_booking', {
     p_inventory_id: avail.availableInventoryId,
