@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseAdmin } from '@/lib/supabaseAdmin'
 
@@ -10,49 +9,51 @@ export async function POST(req: NextRequest) {
   const delivery_type = String(form.get('delivery_type') || 'INSTANT')
 
   if (!variant_id || !wear_date) {
-    return NextResponse.redirect(new URL('/?error=missing', req.url))
+    const u = new URL(req.url); u.pathname = '/'; u.searchParams.set('error', 'missing')
+    return NextResponse.redirect(u)
   }
 
-  // Cek inventory yang available
+  // 1) cari inventory available
   const availUrl = new URL(req.url)
   availUrl.pathname = '/api/availability'
-  availUrl.search = ''
   availUrl.searchParams.set('variantId', variant_id)
   availUrl.searchParams.set('wear_date', wear_date)
   availUrl.searchParams.set('extra_duration', String(extra_duration))
-
   const avail = await fetch(availUrl.toString(), { cache: 'no-store' }).then(r => r.json())
-  if (!avail?.availableInventoryId) {
-    return NextResponse.redirect(new URL('/?error=unavailable', req.url))
+
+  if (!avail.availableInventoryId) {
+    const u = new URL(req.url); u.pathname = '/'; u.searchParams.set('error', 'unavailable')
+    return NextResponse.redirect(u)
   }
 
-  // Ambil info harga produk
+  // 2) ambil product harga via 2 query (hindari typing error)
   const { data: variantRow, error: vErr } = await supabaseAdmin
     .from('variants')
-    .select(`
-      id,
-      product:products (
-        id,
-        base_price,
-        extra_day,
-        deposit
-      )
-    `)
-    .eq('id', Number(variant_id))
-    .maybeSingle()
-
-  if (vErr || !variantRow || !variantRow.product) {
-    console.error(vErr)
-    return NextResponse.redirect(new URL('/?error=variant', req.url))
+    .select('id, product_id')
+    .eq('id', variant_id)
+    .single()
+  if (vErr || !variantRow) {
+    const u = new URL(req.url); u.pathname = '/'; u.searchParams.set('error', 'variant')
+    return NextResponse.redirect(u)
   }
 
-  const base = Number(variantRow.product.base_price ?? 0)
-  const extra = Number(variantRow.product.extra_day ?? 0) * extra_duration
-  const total = base + extra
-  const deposit = Number(variantRow.product.deposit ?? 0)
+  const { data: product, error: pErr } = await supabaseAdmin
+    .from('products')
+    .select('base_price, extra_day, deposit')
+    .eq('id', variantRow.product_id)
+    .single()
+  if (pErr || !product) {
+    const u = new URL(req.url); u.pathname = '/'; u.searchParams.set('error', 'product')
+    return NextResponse.redirect(u)
+  }
 
-  // Buat order + booking
-  const { error } = await supabaseAdmin.rpc('create_order_with_booking', {
+  const base = Number(product.base_price ?? 0)
+  const extra = Number(product.extra_day ?? 0) * Number(extra_duration ?? 0)
+  const total = base + extra
+  const deposit = Number(product.deposit ?? 0)
+
+  // 3) create order + booking via RPC
+  const { error: rpcErr } = await supabaseAdmin.rpc('create_order_with_booking', {
     p_inventory_id: avail.availableInventoryId,
     p_wear_date: wear_date,
     p_extra_duration: extra_duration,
@@ -61,10 +62,11 @@ export async function POST(req: NextRequest) {
     p_deposit: deposit
   })
 
-  if (error) {
-    console.error(error)
-    return NextResponse.redirect(new URL('/?error=order', req.url))
+  if (rpcErr) {
+    const u = new URL(req.url); u.pathname = '/'; u.searchParams.set('error', 'order')
+    return NextResponse.redirect(u)
   }
 
-  return NextResponse.redirect(new URL('/success', req.url))
+  const u = new URL(req.url); u.pathname = '/success'
+  return NextResponse.redirect(u)
 }
