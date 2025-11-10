@@ -1,3 +1,3 @@
 export function calcPrice(basePrice: number, extraDay: number, extra: number) {
-  return basePrice + extraDay * Math.max(0, extra);
+  return Number(basePrice) + Number(extraDay) * Math.max(0, Number(extra))
 }
